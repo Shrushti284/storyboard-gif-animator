@@ -8,3 +8,6 @@ numpy
 requests
 imageio
 imageio-ffmpeg
+transformers
+torch
+torchvision
