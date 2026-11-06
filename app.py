@@ -49,18 +49,80 @@ def make_storyboard(idea, style, mode):
 
 # ---------------------------------------------------------------- U3: frames + BLIP + consistency
 def gen_frame(prompt, seed, provider):
-    if provider == "HuggingFace (free token)" and "HF_TOKEN" in st.secrets:
+
+    # HuggingFace provider
+    if provider == "HuggingFace (free token)":
+        if "HF_TOKEN" not in st.secrets:
+            raise RuntimeError("Please add HF_TOKEN to Streamlit Secrets.")
+
         from huggingface_hub import InferenceClient
+
         c = InferenceClient(token=st.secrets["HF_TOKEN"])
-        return c.text_to_image(prompt, model="black-forest-labs/FLUX.1-schnell", seed=seed).resize((SIZE, SIZE))
-    url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(prompt)
-           + f"?seed={seed}&width={SIZE}&height={SIZE}&nologo=true")
-    for _ in range(3):
-        r = requests.get(url, timeout=90)
-        if r.ok and r.headers.get("content-type", "").startswith("image"):
-            return Image.open(io.BytesIO(r.content)).convert("RGB").resize((SIZE, SIZE))
-        time.sleep(3)
-    raise RuntimeError("Image provider failed; try again or switch provider.")
+
+        return c.text_to_image(
+            prompt,
+            model="black-forest-labs/FLUX.1-schnell",
+            seed=seed
+        ).resize((SIZE, SIZE))
+
+    # Pollinations provider
+    api_key = st.secrets.get("POLLINATIONS_API_KEY")
+
+    if not api_key:
+        raise RuntimeError("POLLINATIONS_API_KEY is missing.")
+
+    url = (
+        "https://gen.pollinations.ai/image/"
+        + urllib.parse.quote(prompt, safe="")
+    )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}"
+    }
+
+    params = {
+        "model": "black-forest-labs/flux.1-schnell",
+        "seed": seed,
+        "width": SIZE,
+        "height": SIZE,
+        "nologo": "true"
+    }
+
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=120
+            )
+
+            if r.ok and r.headers.get("content-type", "").startswith("image"):
+                return Image.open(
+                    io.BytesIO(r.content)
+                ).convert("RGB").resize((SIZE, SIZE))
+
+            if r.status_code in (401, 403):
+                raise RuntimeError(
+                    "Pollinations API key is invalid or lacks permission."
+                )
+
+            if r.status_code not in (429, 500, 502, 503, 504):
+                raise RuntimeError(
+                    f"Pollinations error {r.status_code}: {r.text[:300]}"
+                )
+
+            time.sleep(2 ** (attempt + 1))
+
+        except requests.RequestException as e:
+            if attempt == 2:
+                raise RuntimeError(f"Image request failed: {e}") from e
+
+            time.sleep(2 ** (attempt + 1))
+
+    raise RuntimeError(
+        "Pollinations image generation failed after 3 attempts."
+    )
 
 
 def blip_caption(img):
