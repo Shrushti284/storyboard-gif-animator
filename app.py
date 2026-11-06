@@ -8,7 +8,7 @@ from google import genai
 
 st.set_page_config(page_title="Storyboard-to-GIF Animator", page_icon="🎞️", layout="wide")
 
-GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.8-flash")
 SIZE = 512
 BLOCKLIST = ["gore", "nude", "naked", "porn", "suicide", "kill", "terror", "bomb", "child abuse"]
 
