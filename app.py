@@ -146,17 +146,28 @@ with tab1:
     style = st.selectbox("Style", ["watercolor", "pixel art", "flat vector illustration", "pencil sketch"])
     mode = st.radio("Prompt technique", ["zero-shot", "few-shot"], horizontal=True)
     c1, c2 = st.columns(2)
-    if c1.button("Generate storyboard", type="primary"):
-        bad = guardrail(idea)
-        if bad:
-            st.error(f"Blocked by safety guardrail: {bad}")
-        else:
-            data, ok, lat = make_storyboard(idea, style, mode)
+if c1.button("Generate storyboard", type="primary"):
+    bad = guardrail(idea)
+
+    if bad:
+        st.error(f"Blocked by safety guardrail: {bad}")
+
+    else:
+        try:
+            with st.spinner("Gemini is generating your storyboard..."):
+                data, ok, lat = make_storyboard(idea, style, mode)
+
             if data and ok:
                 st.session_state["sb"] = data
-                st.success(f"{mode}: valid 6-shot JSON in {lat:.1f}s")
+                st.success(
+                    f"{mode}: valid 6-shot JSON generated in {lat:.1f}s"
+                )
             else:
-                st.error("Model did not return valid 6-shot JSON. Try again (this is a logged failure case).")
+                st.error("Gemini returned invalid storyboard JSON. Please try again.")
+
+        except Exception as e:
+            st.error(f"Gemini API Error: {type(e).__name__}: {e}")
+            st.info("Check your Gemini model name, API key and API quota.")
     if c2.button("Compare zero-shot vs few-shot (3 runs each)"):
         rows = []
         for m in ["zero-shot", "few-shot"]:
