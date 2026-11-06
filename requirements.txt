@@ -1,0 +1,10 @@
+streamlit
+google-genai
+huggingface_hub
+sentence-transformers
+torch --extra-index-url https://download.pytorch.org/whl/cpu
+pillow
+numpy
+requests
+imageio
+imageio-ffmpeg
