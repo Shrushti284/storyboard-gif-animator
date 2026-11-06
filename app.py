@@ -133,17 +133,33 @@ def blip_caption(img):
 
 
 @st.cache_resource
-def bert_model():
-    from sentence_transformers import SentenceTransformer  # BERT-family encoder (PyTorch)
-    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+def load_blip():
+    from transformers import BlipProcessor, BlipForConditionalGeneration
+
+    model_name = "Salesforce/blip-image-captioning-base"
+
+    processor = BlipProcessor.from_pretrained(model_name)
+    model = BlipForConditionalGeneration.from_pretrained(model_name)
+
+    model.eval()
+
+    return processor, model
 
 
-def consistency(captions):
-    e = bert_model().encode(captions, normalize_embeddings=True)
-    sim = e @ e.T
-    iu = np.triu_indices(len(captions), 1)
-    return float(sim[iu].mean()), sim
+def blip_caption(img):
+    import torch
 
+    processor, model = load_blip()
+
+    inputs = processor(
+        images=img.convert("RGB"),
+        return_tensors="pt"
+    )
+
+    with torch.no_grad():
+        output = model.generate(**inputs, max_new_tokens=40)
+
+    return processor.decode(output[0], skip_special_tokens=True)
 
 # ---------------------------------------------------------------- U4/U5: video, music, label
 def add_label(img, text="AI-generated content"):
