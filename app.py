@@ -125,13 +125,6 @@ def gen_frame(prompt, seed, provider):
     )
 
 
-def blip_caption(img):
-    from huggingface_hub import InferenceClient
-    c = InferenceClient(token=st.secrets["HF_TOKEN"])
-    r = c.image_to_text(img, model="Salesforce/blip-image-captioning-base")
-    return getattr(r, "generated_text", str(r))
-
-
 @st.cache_resource
 def load_blip():
     from transformers import BlipProcessor, BlipForConditionalGeneration
@@ -157,9 +150,16 @@ def blip_caption(img):
     )
 
     with torch.no_grad():
-        output = model.generate(**inputs, max_new_tokens=40)
+        output = model.generate(
+            **inputs,
+            max_new_tokens=40
+        )
 
-    return processor.decode(output[0], skip_special_tokens=True)
+    return processor.decode(
+        output[0],
+        skip_special_tokens=True
+    )
+
 
 # ---------------------------------------------------------------- U4/U5: video, music, label
 def add_label(img, text="AI-generated content"):
