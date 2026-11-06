@@ -126,6 +126,16 @@ def gen_frame(prompt, seed, provider):
 
 
 @st.cache_resource
+def bert_model():
+    from sentence_transformers import SentenceTransformer
+    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+
+def consistency(captions):
+    e = bert_model().encode(captions, normalize_embeddings=True)
+    sim = e @ e.T
+    iu = np.triu_indices(len(captions), 1)
+    return float(sim[iu].mean()), sim
 def load_blip():
     from transformers import BlipProcessor, BlipForConditionalGeneration
 
