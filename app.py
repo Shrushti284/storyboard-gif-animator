@@ -8,16 +8,37 @@ from google import genai
 
 st.set_page_config(page_title="Storyboard-to-GIF Animator", page_icon="🎞️", layout="wide")
 
-GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 SIZE = 512
 BLOCKLIST = ["gore", "nude", "naked", "porn", "suicide", "kill", "terror", "bomb", "child abuse"]
 
 
 # ---------------------------------------------------------------- U1/U2: LLM
 def llm(prompt: str, json_mode=False) -> str:
+    """Call Gemini with short retries for temporary server overload (503)."""
+    if "GEMINI_API_KEY" not in st.secrets:
+        raise RuntimeError("GEMINI_API_KEY is missing from Streamlit Secrets.")
+
     client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
     cfg = {"response_mime_type": "application/json"} if json_mode else None
-    return client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=cfg).text
+
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=cfg
+            )
+            if not response or not response.text:
+                raise RuntimeError("Gemini returned an empty response.")
+            return response.text
+        except Exception as exc:
+            # Retry only temporary server overload. Do not loop on quota/auth errors.
+            code = getattr(exc, "code", None)
+            if code == 503 and attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise
 
 
 def guardrail(text: str):
@@ -35,16 +56,46 @@ Example of a good shot: {{"shot": 1, "title": "Wake up",
 "image_prompt": "a small orange robot with round eyes, waking up in a dusty attic, soft morning light, watercolor"}}"""
 
 
+def fallback_storyboard(idea, style):
+    """Create a clearly identified local six-shot fallback if Gemini is unavailable."""
+    character = "a small friendly orange robot with round eyes"
+    scenes = [
+        ("A quiet beginning", f"{character}, standing alone in a quiet garden with dry soil, looking curious, {style}"),
+        ("A tiny discovery", f"{character}, noticing a small seed on the ground and gently picking it up, {style}"),
+        ("A hopeful plan", f"{character}, carefully digging a small hole in the soil and placing the seed inside, {style}"),
+        ("A little care", f"{character}, watering the planted seed with a small watering can under warm sunlight, {style}"),
+        ("New life", f"{character}, watching a tiny green sprout emerge from the soil, joyful expression, {style}"),
+        ("A garden of hope", f"{character}, happily standing beside a beautiful blooming garden full of green plants, {style}")
+    ]
+    shots = [
+        {"shot": i + 1, "title": title, "image_prompt": prompt}
+        for i, (title, prompt) in enumerate(scenes)
+    ]
+    return {
+        "character": character,
+        "idea": idea,
+        "shots": shots,
+        "generation_note": "Local fallback storyboard used because Gemini was temporarily unavailable."
+    }
+
+
 def make_storyboard(idea, style, mode):
     t = time.time()
     raw = llm((ZERO if mode == "zero-shot" else FEW).format(idea=idea, style=style), json_mode=True)
     latency = time.time() - t
     try:
         data = json.loads(re.sub(r"```json|```", "", raw).strip())
-        ok = len(data["shots"]) == 6
+        shots = data.get("shots", [])
+        valid = (
+            isinstance(shots, list)
+            and len(shots) == 6
+            and all(isinstance(s, dict) and s.get("title") and s.get("image_prompt") for s in shots)
+        )
+        if not valid:
+            return None, False, latency
     except Exception:
-        data, ok = None, False
-    return data, ok, latency
+        return None, False, latency
+    return data, True, latency
 
 
 # ---------------------------------------------------------------- U3: frames + BLIP + consistency
@@ -136,6 +187,7 @@ def consistency(captions):
     sim = e @ e.T
     iu = np.triu_indices(len(captions), 1)
     return float(sim[iu].mean()), sim
+@st.cache_resource
 def load_blip():
     from transformers import BlipProcessor, BlipForConditionalGeneration
 
@@ -233,37 +285,54 @@ with tab1:
     idea = st.text_input("Your idea", "A lonely robot finds a seed and grows a garden")
     style = st.selectbox("Style", ["watercolor", "pixel art", "flat vector illustration", "pencil sketch"])
     mode = st.radio("Prompt technique", ["zero-shot", "few-shot"], horizontal=True)
+
     c1, c2 = st.columns(2)
-if c1.button("Generate storyboard", type="primary"):
-    bad = guardrail(idea)
 
-    if bad:
-        st.error(f"Blocked by safety guardrail: {bad}")
-
-    else:
-        try:
-            with st.spinner("Gemini is generating your storyboard..."):
-                data, ok, lat = make_storyboard(idea, style, mode)
-
-            if data and ok:
-                st.session_state["sb"] = data
-                st.success(
-                    f"{mode}: valid 6-shot JSON generated in {lat:.1f}s"
-                )
+    with c1:
+        if st.button("Generate storyboard", type="primary"):
+            bad = guardrail(idea)
+            if bad:
+                st.error(f"Blocked by safety guardrail: {bad}")
             else:
-                st.error("Gemini returned invalid storyboard JSON. Please try again.")
+                try:
+                    with st.spinner(f"Generating six shots with {GEMINI_MODEL}..."):
+                        data, ok, lat = make_storyboard(idea, style, mode)
 
-        except Exception as e:
-            st.error(f"Gemini API Error: {type(e).__name__}: {e}")
-            st.info("Check your Gemini model name, API key and API quota.")
-    if c2.button("Compare zero-shot vs few-shot (3 runs each)"):
-        rows = []
-        for m in ["zero-shot", "few-shot"]:
-            res = [make_storyboard(idea, style, m) for _ in range(3)]
-            rows.append({"technique": m, "valid_JSON_rate": sum(r[1] for r in res) / 3,
-                         "avg_latency_s": round(sum(r[2] for r in res) / 3, 2)})
-        st.table(rows)
+                    if data and ok:
+                        st.session_state["sb"] = data
+                        st.session_state["storyboard_source"] = "Gemini"
+                        st.success(f"{mode}: valid six-shot storyboard generated in {lat:.1f}s.")
+                    else:
+                        st.warning("Gemini returned an invalid storyboard. Using the local fallback.")
+                        st.session_state["sb"] = fallback_storyboard(idea, style)
+                        st.session_state["storyboard_source"] = "Local fallback"
+                except Exception as e:
+                    st.warning(f"Gemini is temporarily unavailable ({type(e).__name__}).")
+                    st.info("A local six-shot fallback is being used so you can continue with image generation.")
+                    st.session_state["sb"] = fallback_storyboard(idea, style)
+                    st.session_state["storyboard_source"] = "Local fallback"
+
+    with c2:
+        if st.button("Compare zero-shot vs few-shot (3 runs each)"):
+            st.warning("This comparison makes six Gemini API calls and may hit the free-tier request limit. Run it only if quota is available.")
+            rows = []
+            for technique in ["zero-shot", "few-shot"]:
+                results = []
+                for _ in range(3):
+                    try:
+                        results.append(make_storyboard(idea, style, technique))
+                    except Exception:
+                        results.append((None, False, 0.0))
+                rows.append({
+                    "technique": technique,
+                    "valid_JSON_rate": sum(result[1] for result in results) / 3,
+                    "avg_latency_s": round(sum(result[2] for result in results) / 3, 2)
+                })
+            st.table(rows)
+
     if "sb" in st.session_state:
+        source = st.session_state.get("storyboard_source", "Unknown")
+        st.caption(f"Storyboard source: {source}")
         st.json(st.session_state["sb"])
 
 with tab2:
@@ -272,23 +341,32 @@ with tab2:
         st.info("Create a storyboard first.")
     else:
         seed = st.number_input("Fixed seed", 0, 99999, 42)
-        provider = st.selectbox("Image provider", ["Pollinations (no key)", "HuggingFace (free token)"])
+        provider = st.selectbox("Image provider", ["Pollinations (API key)", "HuggingFace (free token)"])
         if st.button("Generate 6 frames"):
             frames, bar = [], st.progress(0.0)
-            for i, s in enumerate(sb["shots"]):
-                frames.append(gen_frame(s["image_prompt"], int(seed), provider))
-                bar.progress((i + 1) / 6)
-            st.session_state["frames"] = frames
-            st.session_state.pop("score", None)
+            try:
+                for i, shot in enumerate(sb["shots"]):
+                    frames.append(gen_frame(shot["image_prompt"], int(seed) + i, provider))
+                    bar.progress((i + 1) / 6)
+                st.session_state["frames"] = frames
+                st.session_state.pop("score", None)
+                st.success("All six frames generated.")
+            except Exception as e:
+                st.error(f"Image generation failed: {type(e).__name__}: {e}")
+                st.info("Check the selected provider's API key in Streamlit Secrets.")
         frames = st.session_state.get("frames")
         if frames:
             cols = st.columns(6)
             for c, f, s in zip(cols, frames, sb["shots"]):
                 c.image(f, caption=s["title"])
             if st.button("Check consistency (BLIP + BERT)"):
-                caps = [blip_caption(f) for f in frames]
-                score, _ = consistency(caps)
-                st.session_state["score"] = (score, caps)
+                try:
+                    with st.spinner("Captioning frames and checking semantic similarity..."):
+                        caps = [blip_caption(f) for f in frames]
+                        score, _ = consistency(caps)
+                    st.session_state["score"] = (score, caps)
+                except Exception as e:
+                    st.error(f"Consistency check failed: {type(e).__name__}: {e}")
             if "score" in st.session_state:
                 score, caps = st.session_state["score"]
                 st.metric("Caption-embedding consistency (0-1)", f"{score:.2f}")
